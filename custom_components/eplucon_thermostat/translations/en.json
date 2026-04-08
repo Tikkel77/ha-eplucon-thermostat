@@ -1,0 +1,24 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Eplucon Thermostat",
+        "description": "Enter your Eplucon portal credentials. You can find the API key under 'My Account' > 'API' in the Eplucon portal.",
+        "data": {
+          "username": "Email address",
+          "password": "Password",
+          "api_key": "API key (Bearer token)"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid credentials or API key",
+      "cannot_connect": "Cannot connect to Eplucon portal",
+      "no_modules": "No zone controller modules found in your account",
+      "unknown": "Unexpected error occurred"
+    },
+    "abort": {
+      "already_configured": "This Eplucon controller is already configured"
+    }
+  }
+}
