@@ -42,7 +42,6 @@ class EpluconDataCoordinator(DataUpdateCoordinator[dict[int, Zone]]):
         except Exception as err:
             raise UpdateFailed(f"Unexpected error: {err}") from err
 
-        # Return as dict keyed by zone_api_id for easy lookup
         return {z.zone_api_id: z for z in zones}
 
     def get_zone(self, zone_api_id: int) -> Zone | None:
@@ -52,34 +51,41 @@ class EpluconDataCoordinator(DataUpdateCoordinator[dict[int, Zone]]):
         return self.data.get(zone_api_id)
 
     async def async_set_temperature(self, zone: Zone, temperature: float) -> None:
-        """Set constant temperature for a zone."""
+        """Set constant temperature for a zone (fire-and-forget + delayed refresh)."""
         await self.hass.async_add_executor_job(
-            self.client.set_constant_temperature, zone, temperature,
+            lambda: self.client.set_constant_temperature(zone, temperature, wait=False),
         )
-        # Wait for the portal to process
-        await self.hass.async_add_executor_job(
-            self.client.wait_for_zone_idle, zone.zone_api_id,
-        )
-        await self.async_request_refresh()
+        self._schedule_delayed_refresh(zone.zone_api_id)
 
     async def async_set_time_limit_temperature(
         self, zone: Zone, temperature: float, total_minutes: int
     ) -> None:
-        """Set temperature with time limit."""
+        """Set temperature with time limit (fire-and-forget + delayed refresh)."""
         await self.hass.async_add_executor_job(
-            self.client.set_temperature_for_minutes, zone, temperature, total_minutes,
+            lambda: self.client.set_temperature_for_minutes(zone, temperature, total_minutes, wait=False),
         )
-        await self.hass.async_add_executor_job(
-            self.client.wait_for_zone_idle, zone.zone_api_id,
-        )
-        await self.async_request_refresh()
+        self._schedule_delayed_refresh(zone.zone_api_id)
 
     async def async_activate_program(self, zone: Zone, program_index: int) -> None:
-        """Activate a schedule program for a zone."""
+        """Activate a schedule program for a zone (fire-and-forget + delayed refresh)."""
         await self.hass.async_add_executor_job(
-            self.client.activate_program, zone, program_index,
+            lambda: self.client.activate_program(zone, program_index, wait=False),
         )
-        await self.hass.async_add_executor_job(
-            self.client.wait_for_zone_idle, zone.zone_api_id,
-        )
-        await self.async_request_refresh()
+        self._schedule_delayed_refresh(zone.zone_api_id)
+
+    def _schedule_delayed_refresh(self, zone_api_id: int) -> None:
+        """Schedule a data refresh after the portal has processed the write."""
+
+        async def _delayed_refresh() -> None:
+            import asyncio
+            # Wait for portal to process, then refresh
+            await asyncio.sleep(15)
+            try:
+                await self.hass.async_add_executor_job(
+                    self.client.wait_for_zone_idle, zone_api_id,
+                )
+            except Exception:
+                _LOGGER.debug("wait_for_zone_idle failed for zone %s", zone_api_id)
+            await self.async_request_refresh()
+
+        self.hass.async_create_task(_delayed_refresh())
