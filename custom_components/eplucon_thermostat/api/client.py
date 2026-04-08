@@ -708,7 +708,10 @@ class EpluconClient:
 
         response = None
         for attempt in range(2):
-            csrf = self._get_csrf_for_account_module(zone.account_module_index)
+            if attempt > 0:
+                # Force fresh login + CSRF on retry
+                self._invalidate_portal_auth()
+            csrf = self._get_csrf_for_account_module(zone.account_module_index, force_refresh=True)
             payload: dict[str, str] = {
                 "_token": csrf,
                 "mode": mode,
