@@ -23,10 +23,11 @@ from .coordinator import EpluconDataCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-# Map Eplucon modes to HA preset modes
+# Preset modes
 PRESET_CONSTANT = "Constant"
 PRESET_TIME_LIMIT = "Time limit"
 PRESET_SCHEDULE = "Schedule"
+PRESET_CON = "Con"
 
 EPLUCON_MODE_TO_PRESET = {
     "constantTemp": PRESET_CONSTANT,
@@ -67,7 +68,12 @@ class EpluconClimateEntity(CoordinatorEntity[EpluconDataCoordinator], ClimateEnt
         | ClimateEntityFeature.TURN_OFF
     )
     _attr_hvac_modes = [HVACMode.OFF, HVACMode.HEAT, HVACMode.COOL, HVACMode.AUTO]
-    _attr_preset_modes = [PRESET_CONSTANT, PRESET_TIME_LIMIT, PRESET_SCHEDULE]
+    _attr_preset_modes = [
+        PRESET_CONSTANT,
+        PRESET_TIME_LIMIT,
+        PRESET_CON,
+        PRESET_SCHEDULE,
+    ]
 
     def __init__(
         self,
@@ -147,7 +153,11 @@ class EpluconClimateEntity(CoordinatorEntity[EpluconDataCoordinator], ClimateEnt
         return EPLUCON_MODE_TO_PRESET.get(zone.mode, PRESET_CONSTANT)
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
-        """Set new target temperature."""
+        """Set new target temperature.
+
+        Uses time-limited override with per-zone default duration,
+        capped at the next schedule setpoint.
+        """
         temperature = kwargs.get(ATTR_TEMPERATURE)
         if temperature is None:
             return
@@ -163,9 +173,8 @@ class EpluconClimateEntity(CoordinatorEntity[EpluconDataCoordinator], ClimateEnt
             return
 
         if hvac_mode == HVACMode.AUTO:
-            # Activate schedule (use current schedule_index, or local if none)
+            # Activate schedule (prefer local)
             idx = zone.schedule_index if zone.schedule_index >= 0 else zone.schedule_index
-            # Try to find the local schedule index
             try:
                 forms = await self.hass.async_add_executor_job(
                     self.coordinator.client.get_program_forms, zone
@@ -179,11 +188,11 @@ class EpluconClimateEntity(CoordinatorEntity[EpluconDataCoordinator], ClimateEnt
 
         elif hvac_mode in (HVACMode.HEAT, HVACMode.COOL):
             # Set constant temperature at current setpoint
-            await self.coordinator.async_set_temperature(zone, zone.set_temperature_c)
+            await self.coordinator.async_set_constant_temperature(zone, zone.set_temperature_c)
 
         elif hvac_mode == HVACMode.OFF:
             # Set to minimum temperature as "off"
-            await self.coordinator.async_set_temperature(zone, self._attr_min_temp)
+            await self.coordinator.async_set_constant_temperature(zone, self._attr_min_temp)
 
     async def async_set_preset_mode(self, preset_mode: str) -> None:
         """Set preset mode."""
@@ -204,10 +213,13 @@ class EpluconClimateEntity(CoordinatorEntity[EpluconDataCoordinator], ClimateEnt
                 _LOGGER.error("Failed to activate schedule: %s", err)
 
         elif preset_mode == PRESET_CONSTANT:
-            await self.coordinator.async_set_temperature(zone, zone.set_temperature_c)
+            # Constant temperature (no time limit)
+            await self.coordinator.async_set_constant_temperature(zone, zone.set_temperature_c)
 
         elif preset_mode == PRESET_TIME_LIMIT:
-            # Set time limit with default 4 hours at current temperature
-            await self.coordinator.async_set_time_limit_temperature(
-                zone, zone.set_temperature_c, 240
-            )
+            # Time-limited override with default duration
+            await self.coordinator.async_set_temperature(zone, zone.set_temperature_c)
+
+        elif preset_mode == PRESET_CON:
+            # Temperature until next schedule start, max 8h
+            await self.coordinator.async_set_con_temperature(zone, zone.set_temperature_c)

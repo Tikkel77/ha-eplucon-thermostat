@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 import urllib.parse
@@ -72,6 +73,10 @@ class EpluconClient:
                 )
             }
         )
+        # Separate session for portal writes (login + CSRF + POST)
+        # to avoid conflicts with Bearer API reads on _session
+        self._portal_session = requests.Session()
+        self._portal_session.headers.update(self._session.headers)
         self._portal_logged_in = False
         self._csrf_token_by_ami: dict[str, str] = {}
 
@@ -325,7 +330,7 @@ class EpluconClient:
     def get_program_forms(self, zone: Zone) -> list[ProgramForm]:
         self._ensure_portal_login()
         url = f"{self.base_url}/e-control/zones/{zone.zone_api_id}/ajax/programs"
-        response = self._session.get(
+        response = self._portal_session.get(
             url,
             headers={"X-Requested-With": "XMLHttpRequest"},
             timeout=self.request_timeout,
@@ -492,7 +497,7 @@ class EpluconClient:
         for module in modules:
             try:
                 url = f"{self.base_url}/e-control/zones/ajax/refresh?account_module_index={module.account_module_index}"
-                response = self._session.get(
+                response = self._portal_session.get(
                     url,
                     headers={"X-Requested-With": "XMLHttpRequest"},
                     timeout=self.request_timeout,
@@ -631,7 +636,7 @@ class EpluconClient:
         if self._portal_logged_in:
             return
 
-        page = self._session.get(
+        page = self._portal_session.get(
             f"{self.base_url}/login",
             timeout=self.request_timeout,
             verify=self.verify_tls,
@@ -656,7 +661,7 @@ class EpluconClient:
         if honeypot_name:
             payload[honeypot_name] = ""
 
-        login_resp = self._session.post(
+        login_resp = self._portal_session.post(
             f"{self.base_url}/login",
             data=payload,
             headers={"Origin": self.base_url, "Referer": f"{self.base_url}/login"},
@@ -666,7 +671,7 @@ class EpluconClient:
         )
         login_resp.raise_for_status()
 
-        session_cookie_names = [k for k in self._session.cookies.keys() if k.endswith("_session")]
+        session_cookie_names = [k for k in self._portal_session.cookies.keys() if k.endswith("_session")]
         if not session_cookie_names:
             raise AuthenticationError("Portal login lijkt mislukt: geen session-cookie")
 
@@ -680,7 +685,7 @@ class EpluconClient:
 
         self._ensure_portal_login()
         page_url = f"{self.base_url}/e-control/zones?account_module_index={account_module_index}"
-        response = self._session.get(
+        response = self._portal_session.get(
             page_url,
             timeout=self.request_timeout,
             verify=self.verify_tls,
@@ -704,14 +709,18 @@ class EpluconClient:
         hours: Optional[int],
         minutes: Optional[int],
     ) -> None:
+        _logger = logging.getLogger(__name__)
         url = f"{self.base_url}/e-control/set_constant_temp?account_module_index={zone.account_module_index}"
 
         response = None
         for attempt in range(2):
-            if attempt > 0:
-                # Force fresh login + CSRF on retry
-                self._invalidate_portal_auth()
+            # Always invalidate + re-login to ensure fresh session
+            self._invalidate_portal_auth()
+            _logger.debug("Write attempt %d: invalidated auth, getting fresh CSRF", attempt)
             csrf = self._get_csrf_for_account_module(zone.account_module_index, force_refresh=True)
+            _logger.debug("Write attempt %d: got CSRF %s..., logged_in=%s, cookies=%s",
+                          attempt, csrf[:12], self._portal_logged_in,
+                          list(self._portal_session.cookies.keys()))
             payload: dict[str, str] = {
                 "_token": csrf,
                 "mode": mode,
@@ -726,7 +735,7 @@ class EpluconClient:
             if minutes is not None:
                 payload["minutes"] = str(minutes)
 
-            response = self._session.post(
+            response = self._portal_session.post(
                 url,
                 data=payload,
                 headers={
@@ -739,7 +748,12 @@ class EpluconClient:
                 verify=self.verify_tls,
             )
 
+            _logger.debug("Write attempt %d: response status=%d, body=%s",
+                          attempt, response.status_code, response.text[:200])
+
             if self._needs_portal_refresh(response) and attempt == 0:
+                _logger.warning("Write attempt %d: needs portal refresh (status=%d), retrying",
+                               attempt, response.status_code)
                 self._invalidate_portal_auth()
                 continue
             break
@@ -834,7 +848,7 @@ class EpluconClient:
             payload.append(("dataSerialize", data_serialize))
             payload.append(("data", data_json))
 
-            response = self._session.post(
+            response = self._portal_session.post(
                 form.action_url,
                 data=payload,
                 headers={
@@ -1043,10 +1057,16 @@ class EpluconClient:
     def _invalidate_portal_auth(self) -> None:
         self._portal_logged_in = False
         self._csrf_token_by_ami.clear()
-        try:
-            self._session.cookies.clear()
-        except Exception:
-            pass
+        # Create a completely fresh session to avoid stale cookies/state
+        self._portal_session = requests.Session()
+        self._portal_session.headers.update(
+            {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                )
+            }
+        )
 
     def _needs_portal_refresh(self, response: requests.Response) -> bool:
         if response.status_code in (401, 419):
