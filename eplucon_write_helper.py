@@ -16,6 +16,7 @@ import time
 
 
 LOG_FILE = "/config/write_helper_debug.log"
+TRACE_DIR = "/config/traces"
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -40,9 +41,10 @@ def curl(
     headers=None,
     follow_redirects=True,
     timeout=40,
+    trace_tag=None,
+    step_name=None,
 ):
     """Run curl and return (status_code, final_url, body, meta)."""
-    # Extended -w format to capture remote_ip, local_ip, http_version, redirect_url
     write_out = (
         "\n__CURL_META__\n"
         "http_code=%{http_code}\n"
@@ -54,6 +56,13 @@ def curl(
         "http_version=%{http_version}\n"
         "redirect_url=%{redirect_url}\n"
     )
+
+    # Build trace file path — always trace when trace_tag is set
+    trace_file = None
+    if trace_tag and step_name:
+        os.makedirs(TRACE_DIR, exist_ok=True)
+        trace_file = os.path.join(TRACE_DIR, f"{trace_tag}_{step_name}.trace")
+
     cmd = [
         "curl", "-s",           # silent
         "-S",                    # show errors
@@ -66,6 +75,8 @@ def curl(
         "-A", USER_AGENT,
         "--max-time", str(timeout),
     ]
+    if trace_file:
+        cmd += ["--trace-ascii", trace_file]
     if follow_redirects:
         cmd += ["-L", "--max-redirs", "10"]
     if method == "POST":
@@ -83,7 +94,6 @@ def curl(
     raw = result.stdout.decode("utf-8", errors="replace")
     stderr = result.stderr.decode("utf-8", errors="replace").strip()
     if stderr:
-        # Log relevant headers from verbose output
         for line in stderr.split("\n"):
             line_l = line.strip().lower()
             if any(h in line_l for h in ("set-cookie", "location:", "< http/", "connected to")):
@@ -91,7 +101,6 @@ def curl(
     if result.returncode != 0:
         raise RuntimeError(f"curl failed (rc={result.returncode}): {stderr}")
 
-    # Parse output: body + __CURL_META__ + key=value lines
     meta = {}
     if "__CURL_META__" in raw:
         parts = raw.split("__CURL_META__", 1)
@@ -102,10 +111,10 @@ def curl(
                 meta[k.strip()] = v.strip()
     else:
         body = raw
-    
+
     status_code = int(meta.get("http_code", "0"))
     final_url = meta.get("url_effective", "")
-    
+
     log_debug(
         f"  status={status_code} final_url={final_url} body_len={len(body)} "
         f"remote_ip={meta.get('remote_ip', '?')}:{meta.get('remote_port', '?')} "
@@ -113,6 +122,8 @@ def curl(
         f"http_ver={meta.get('http_version', '?')} "
         f"redirect_url={meta.get('redirect_url', '')}"
     )
+    if trace_file:
+        log_debug(f"  trace written to {trace_file}")
     return status_code, final_url, body, meta
 
 
@@ -122,11 +133,7 @@ def extract_input_value(html, input_name):
 
 
 def extract_honeypot_name(html):
-    """Find honeypot field: an <input> with type="text" that isn't 'username'.
-
-    The HTML may have name before type, so we match both orderings.
-    """
-    # Match inputs with type="text" — name could be before or after type
+    """Find honeypot field: an <input> with type="text" that isn't 'username'."""
     pattern1 = r'<input[^>]*type="text"[^>]*name="([^"]+)"'
     pattern2 = r'<input[^>]*name="([^"]+)"[^>]*type="text"'
     names = set()
@@ -151,10 +158,11 @@ def do_write(args):
     active_schedule = args["active_schedule"]
     hours = args.get("hours")
     minutes = args.get("minutes")
+    trace_tag = args.get("trace_tag")  # optional: "docker" or "ha" for trace comparison
 
-    log_debug(f"=== NEW WRITE (curl) PID={os.getpid()} PPID={os.getppid()} ===")
+    log_debug(f"=== NEW WRITE (curl) PID={os.getpid()} PPID={os.getppid()} trace_tag={trace_tag} ===")
+    log_debug(f"  args: mode={mode} temp_deci={constant_temp_deci} zone={zone_internal_id} mode_id={mode_id} schedule={active_schedule} hours={hours} minutes={minutes}")
 
-    # Create temp cookie jar
     cookie_fd, cookie_jar = tempfile.mkstemp(prefix="eplucon_cookies_", suffix=".txt")
     os.close(cookie_fd)
 
@@ -163,7 +171,7 @@ def do_write(args):
             base, username, password, timeout,
             ami, mode, mode_id, zone_internal_id,
             constant_temp_deci, active_schedule,
-            hours, minutes, cookie_jar,
+            hours, minutes, cookie_jar, trace_tag,
         )
     finally:
         try:
@@ -176,21 +184,23 @@ def _do_write_with_cookies(
     base, username, password, timeout,
     ami, mode, mode_id, zone_internal_id,
     constant_temp_deci, active_schedule,
-    hours, minutes, cookie_jar,
+    hours, minutes, cookie_jar, trace_tag,
 ):
     url_set = f"{base}/e-control/set_constant_temp?account_module_index={ami}"
     referer = f"{base}/e-control/zones?account_module_index={ami}"
 
     for attempt in range(2):
-        # Fresh cookie jar on each attempt
         try:
             os.unlink(cookie_jar)
         except OSError:
             pass
         open(cookie_jar, "w").close()
 
-        # Step 1: GET /login to obtain _token, valid_from, honeypot
-        status, final_url, body, meta = curl(f"{base}/login", cookie_jar, timeout=timeout)
+        # Step 1: GET /login
+        status, final_url, body, meta = curl(
+            f"{base}/login", cookie_jar, timeout=timeout,
+            trace_tag=trace_tag, step_name="1_get_login",
+        )
         login_remote_ip = meta.get("remote_ip", "unknown")
         log_debug(f"  GET /login remote_ip={login_remote_ip}")
         if status != 200:
@@ -215,9 +225,6 @@ def _do_write_with_cookies(
         if honeypot:
             login_data[honeypot] = ""
 
-        # Log the exact POST data for comparison (mask password)
-        debug_data = dict(login_data)
-        debug_data["password"] = "***"
         log_debug(f"  login POST data keys: {list(login_data.keys())}")
         log_debug(f"  login POST _token length: {len(token)}")
         log_debug(f"  login POST valid_from length: {len(valid_from)}")
@@ -229,23 +236,20 @@ def _do_write_with_cookies(
             headers={"Origin": base, "Referer": f"{base}/login"},
             follow_redirects=False,
             timeout=timeout,
+            trace_tag=trace_tag, step_name="2_post_login",
         )
         redirect_url = meta.get("redirect_url", "")
         post_remote_ip = meta.get("remote_ip", "unknown")
         log_debug(f"  login POST status={status} redirect_url={redirect_url} remote_ip={post_remote_ip}")
 
-        # Login POST returns 302 on success (redirect to /e-control)
-        # and 200 or 419 on failure (re-displays login page)
         if status in (302, 301):
             if "/login" in redirect_url and "/e-control" not in redirect_url:
-                # 302 back to /login = login REJECTED
                 log_debug(f"  login REJECTED (302 back to /login). Body preview: {body[:500]!r}")
                 if attempt == 0:
                     continue
                 raise RuntimeError(f"Login rejected: 302 to {redirect_url}")
             log_debug("  login OK (redirect to e-control)")
         elif status < 400:
-            # 200 means login page re-displayed = bad credentials
             log_debug(f"  login might have failed: status={status} body[:500]={body[:500]!r}")
             if attempt == 0:
                 continue
@@ -256,7 +260,7 @@ def _do_write_with_cookies(
                 continue
             raise RuntimeError(f"Login failed: status={status}")
 
-        # Dump cookie jar for debugging
+        # Dump cookie jar
         try:
             with open(cookie_jar, "r") as cf:
                 jar_contents = cf.read()
@@ -265,7 +269,10 @@ def _do_write_with_cookies(
             log_debug(f"  could not read cookie jar: {e}")
 
         # Step 3: GET zones page for CSRF token
-        status, final_url, body, meta = curl(referer, cookie_jar, timeout=timeout)
+        status, final_url, body, meta = curl(
+            referer, cookie_jar, timeout=timeout,
+            trace_tag=trace_tag, step_name="3_get_zones",
+        )
         if status != 200:
             raise RuntimeError(f"GET zones returned {status} (may have redirected to login)")
 
@@ -291,6 +298,8 @@ def _do_write_with_cookies(
         if minutes is not None:
             post_data["minutes"] = str(minutes)
 
+        log_debug(f"  POST data: {post_data}")
+
         status, final_url, body, meta = curl(
             url_set, cookie_jar,
             method="POST",
@@ -303,6 +312,7 @@ def _do_write_with_cookies(
             },
             follow_redirects=False,
             timeout=timeout,
+            trace_tag=trace_tag, step_name="4_post_write",
         )
 
         log_debug(f"  write status={status} body={body.strip()[:300]!r}")
@@ -314,7 +324,17 @@ def _do_write_with_cookies(
         if status >= 400:
             raise RuntimeError(f"HTTP_{status}: {body[:300]}")
 
-        # Success: portal returns "1" or "" (empty body)
+        # Step 5: Verification GET — same session, check if portal reflects change
+        log_debug("  POST returned success. Verifying with same-session GET...")
+        v_status, v_url, v_body, v_meta = curl(
+            referer, cookie_jar, timeout=timeout,
+            trace_tag=trace_tag, step_name="5_verify_get",
+        )
+        if v_status == 200:
+            log_debug(f"  VERIFY: zones page size={len(v_body)}")
+        else:
+            log_debug(f"  VERIFY: zones page returned {v_status}")
+
         return
 
     raise RuntimeError("Write failed after 2 attempts")

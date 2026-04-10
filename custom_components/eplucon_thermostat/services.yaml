@@ -1,0 +1,89 @@
+set_setback_temperature:
+  name: Set setback temperature
+  description: >
+    Set the setback (reduced) temperature for a zone's schedule profile.
+    Weekday = profile p0 (Mon-Fri), Weekend = profile p1 (Sat-Sun).
+  fields:
+    zone_api_id:
+      name: Zone API ID
+      description: The numeric zone ID (e.g. 6815 for Badkamer 1e)
+      required: true
+      selector:
+        number:
+          min: 1
+          mode: box
+    program_index:
+      name: Program index
+      description: Schedule program index (-3 = local, 0-4 = global)
+      default: -3
+      selector:
+        number:
+          min: -3
+          max: 4
+          mode: box
+    weekday_setback:
+      name: Weekday setback (°C)
+      description: Setback temperature for weekdays (Mon-Fri)
+      selector:
+        number:
+          min: 5
+          max: 35
+          step: 0.5
+          unit_of_measurement: "°C"
+    weekend_setback:
+      name: Weekend setback (°C)
+      description: Setback temperature for weekends (Sat-Sun)
+      selector:
+        number:
+          min: 5
+          max: 35
+          step: 0.5
+          unit_of_measurement: "°C"
+
+set_schedule:
+  name: Set schedule
+  description: >
+    Set schedule intervals for a zone's weekday or weekend profile.
+    Times must be on quarter-hour boundaries (xx:00, xx:15, xx:30, xx:45).
+    Maximum 3 intervals per profile.
+  fields:
+    zone_api_id:
+      name: Zone API ID
+      description: The numeric zone ID (e.g. 6815 for Badkamer 1e)
+      required: true
+      selector:
+        number:
+          min: 1
+          mode: box
+    program_index:
+      name: Program index
+      description: Schedule program index (-3 = local, 0-4 = global)
+      default: -3
+      selector:
+        number:
+          min: -3
+          max: 4
+          mode: box
+    profile:
+      name: Profile
+      description: Which day profile to set
+      required: true
+      selector:
+        select:
+          options:
+            - weekday
+            - weekend
+    intervals:
+      name: Intervals
+      description: >
+        List of schedule intervals. Each has start (HH:MM), end (HH:MM),
+        and temp (°C). Example: [{start: "06:00", end: "09:00", temp: 21.0}]
+      required: true
+      selector:
+        object:
+    activate:
+      name: Activate schedule
+      description: Whether to activate the schedule after saving
+      default: true
+      selector:
+        boolean:

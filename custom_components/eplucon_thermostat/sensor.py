@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -16,10 +17,53 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api import Zone
+from .api.schedule import get_next_schedule_start
 from .const import DOMAIN, MANUFACTURER
 from .coordinator import EpluconDataCoordinator
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _next_schedule_change_iso(zone: Zone) -> datetime | None:
+    """Return datetime of the next schedule transition for this zone."""
+    return get_next_schedule_start(zone)
+
+
+def _setback_temp_c(zone: Zone, profile: str) -> float | None:
+    """Return setback temperature in °C for profile p0 or p1."""
+    schedule = zone.raw_data.get("schedule", {})
+    raw = schedule.get(f"{profile}SetbackTemp")
+    if raw is None:
+        return None
+    try:
+        return int(raw) / 10.0
+    except (ValueError, TypeError):
+        return None
+
+
+def _schedule_summary(zone: Zone) -> str | None:
+    """Return a human-readable summary of the active schedule intervals."""
+    schedule = zone.raw_data.get("schedule", {})
+    if not schedule:
+        return None
+
+    parts: list[str] = []
+    for profile, label in (("p0", "Weekday"), ("p1", "Weekend")):
+        intervals = schedule.get(f"{profile}Intervals", [])
+        active = [iv for iv in intervals if isinstance(iv, dict) and iv.get("start", 6100) < 1440]
+        if not active:
+            continue
+        iv_strs = []
+        for iv in active:
+            s = iv["start"]
+            e = iv["stop"] if iv.get("stop", 6100) < 1440 else None
+            t = iv.get("temp", 0) / 10.0
+            s_str = f"{s // 60:02d}:{s % 60:02d}"
+            e_str = f"{e // 60:02d}:{e % 60:02d}" if e is not None else "—"
+            iv_strs.append(f"{s_str}-{e_str} {t:.0f}°C")
+        parts.append(f"{label}: {', '.join(iv_strs)}")
+
+    return "; ".join(parts) if parts else "No intervals"
 
 
 SENSOR_TYPES = [
@@ -81,6 +125,42 @@ SENSOR_TYPES = [
         "state_class": None,
         "value_fn": lambda z: z.mode,
         "icon": "mdi:thermostat",
+    },
+    {
+        "key": "next_schedule_change",
+        "name": "Next schedule change",
+        "device_class": SensorDeviceClass.TIMESTAMP,
+        "unit": None,
+        "state_class": None,
+        "value_fn": lambda z: _next_schedule_change_iso(z),
+        "icon": "mdi:calendar-clock",
+    },
+    {
+        "key": "setback_weekday",
+        "name": "Setback temperature weekday",
+        "device_class": SensorDeviceClass.TEMPERATURE,
+        "unit": UnitOfTemperature.CELSIUS,
+        "state_class": SensorStateClass.MEASUREMENT,
+        "value_fn": lambda z: _setback_temp_c(z, "p0"),
+        "icon": "mdi:thermometer-low",
+    },
+    {
+        "key": "setback_weekend",
+        "name": "Setback temperature weekend",
+        "device_class": SensorDeviceClass.TEMPERATURE,
+        "unit": UnitOfTemperature.CELSIUS,
+        "state_class": SensorStateClass.MEASUREMENT,
+        "value_fn": lambda z: _setback_temp_c(z, "p1"),
+        "icon": "mdi:thermometer-low",
+    },
+    {
+        "key": "schedule_summary",
+        "name": "Schedule summary",
+        "device_class": None,
+        "unit": None,
+        "state_class": None,
+        "value_fn": lambda z: _schedule_summary(z),
+        "icon": "mdi:calendar-text",
     },
 ]
 

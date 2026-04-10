@@ -216,10 +216,14 @@ class EpluconDataCoordinator(DataUpdateCoordinator[dict[int, Zone]]):
         self._schedule_delayed_refresh(zone.zone_api_id)
 
     def _schedule_delayed_refresh(self, zone_api_id: int) -> None:
-        """Schedule a data refresh after the portal has processed the write."""
+        """Schedule a data refresh after the portal has processed the write.
+
+        The Eplucon portal takes 60-90 seconds to propagate changes,
+        so we wait 90 seconds before refreshing.
+        """
 
         async def _delayed_refresh() -> None:
-            await asyncio.sleep(20)
+            await asyncio.sleep(90)
             await self.async_request_refresh()
 
         self.hass.async_create_task(_delayed_refresh())

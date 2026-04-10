@@ -636,6 +636,8 @@ class EpluconClient:
         if self._portal_logged_in:
             return
 
+        _logger = logging.getLogger(__name__)
+
         page = self._portal_session.get(
             f"{self.base_url}/login",
             timeout=self.request_timeout,
@@ -665,17 +667,40 @@ class EpluconClient:
             f"{self.base_url}/login",
             data=payload,
             headers={"Origin": self.base_url, "Referer": f"{self.base_url}/login"},
-            allow_redirects=True,
+            allow_redirects=False,
             timeout=self.request_timeout,
             verify=self.verify_tls,
         )
-        login_resp.raise_for_status()
 
-        session_cookie_names = [k for k in self._portal_session.cookies.keys() if k.endswith("_session")]
-        if not session_cookie_names:
-            raise AuthenticationError("Portal login lijkt mislukt: geen session-cookie")
+        # Check redirect target to determine login success
+        if login_resp.status_code in (301, 302, 303):
+            location = login_resp.headers.get("Location", "")
+            _logger.debug("Portal login redirect: %s", location)
+            if "/login" in location:
+                raise AuthenticationError(
+                    f"Portal login failed: redirected back to {location}"
+                )
+            # Follow the redirect manually
+            self._portal_session.get(
+                location,
+                timeout=self.request_timeout,
+                verify=self.verify_tls,
+            )
+        else:
+            login_resp.raise_for_status()
+
+        # Verify we have a remember cookie (set only on successful login)
+        remember_cookies = [k for k in self._portal_session.cookies.keys() if k.startswith("remember_web")]
+        if not remember_cookies:
+            cookie_names = list(self._portal_session.cookies.keys())
+            _logger.warning("Portal login: no remember_web cookie. Cookies: %s", cookie_names)
+            raise AuthenticationError(
+                f"Portal login lijkt mislukt: geen remember_web cookie. "
+                f"Cookies: {cookie_names}"
+            )
 
         self._portal_logged_in = True
+        _logger.info("Portal login successful")
 
     def _get_csrf_for_account_module(self, account_module_index: str, force_refresh: bool = False) -> str:
         if not force_refresh:
@@ -821,6 +846,7 @@ class EpluconClient:
         *,
         overrides: dict[str, str | list[str]],
     ) -> None:
+        _logger = logging.getLogger(__name__)
         # Re-fetch the form fresh to get a valid CSRF token and fresh form data
         fresh_forms = self.get_program_forms(zone)
         fresh_form = None
@@ -834,6 +860,11 @@ class EpluconClient:
         overrides = self._round_schedule_times(overrides)
         pairs = list(fresh_form.serialize_pairs())
         pairs = self._apply_schedule_overrides(pairs, overrides)
+
+        _logger.debug(
+            "submit_program_form: zone=%s idx=%d action=%s overrides=%s",
+            zone.name, form.index, form.action_url, overrides,
+        )
 
         response = None
         for attempt in range(2):
@@ -861,7 +892,13 @@ class EpluconClient:
                 verify=self.verify_tls,
             )
 
+            _logger.debug(
+                "submit_program_form attempt %d: status=%d body=%s",
+                attempt, response.status_code, response.text[:200],
+            )
+
             if self._needs_portal_refresh(response) and attempt == 0:
+                _logger.warning("submit_program_form: portal refresh needed, retrying")
                 self._invalidate_portal_auth()
                 continue
             break
