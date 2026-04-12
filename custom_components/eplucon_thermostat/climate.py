@@ -108,7 +108,13 @@ class EpluconClimateEntity(CoordinatorEntity[EpluconDataCoordinator], ClimateEnt
     @property
     def target_temperature(self) -> float | None:
         zone = self._zone
-        return zone.set_temperature_c if zone else None
+        if zone is None:
+            return None
+        # Show pending (optimistic) temp if user is adjusting
+        pending = self.coordinator.get_pending_temp(self._zone_api_id)
+        if pending is not None:
+            return pending
+        return zone.set_temperature_c
 
     @property
     def current_humidity(self) -> int | None:
@@ -151,6 +157,18 @@ class EpluconClimateEntity(CoordinatorEntity[EpluconDataCoordinator], ClimateEnt
         if zone is None:
             return None
         return EPLUCON_MODE_TO_PRESET.get(zone.mode, PRESET_CONSTANT)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Expose pending/writing state for dashboard visualization."""
+        attrs: dict[str, Any] = {}
+        pending = self.coordinator.get_pending_temp(self._zone_api_id)
+        if pending is not None:
+            attrs["temperature_pending"] = True
+        writing = self.coordinator.is_writing(self._zone_api_id)
+        if writing:
+            attrs["temperature_writing"] = True
+        return attrs
 
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set new target temperature.

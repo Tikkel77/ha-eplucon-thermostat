@@ -87,3 +87,56 @@ set_schedule:
       default: true
       selector:
         boolean:
+
+convert_constant_to_timed:
+  name: Convert constant zones to timed
+  description: >
+    Finds all zones currently in "constantTemp" mode and converts them to
+    "timeLimit" mode with the default duration per zone, capped at the
+    next schedule setpoint. Zones at ≤5.5°C (effectively off) are skipped.
+
+load_schedule:
+  name: Load schedule into helpers
+  description: >
+    Loads the current schedule data for a zone into input helpers for editing.
+    Populates start/end times, temperatures, and setback values into
+    input_text and input_number entities.
+  fields:
+    zone_api_id:
+      name: Zone API ID
+      description: The numeric zone ID (e.g. 6815 for Badkamer 1e)
+      required: true
+      selector:
+        number:
+          min: 1
+          mode: box
+
+save_schedule:
+  name: Save schedule from helpers
+  description: >
+    Reads schedule values from input helpers and saves them to the Eplucon
+    portal. Also saves the setback temperature for the selected profile.
+  fields:
+    zone_api_id:
+      name: Zone API ID
+      description: The numeric zone ID (e.g. 6815 for Badkamer 1e)
+      required: true
+      selector:
+        number:
+          min: 1
+          mode: box
+    profile:
+      name: Profile
+      description: Which day profile to save
+      default: weekday
+      selector:
+        select:
+          options:
+            - weekday
+            - weekend
+    activate:
+      name: Activate schedule
+      description: Whether to activate the schedule after saving
+      default: true
+      selector:
+        boolean:

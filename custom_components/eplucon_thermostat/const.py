@@ -28,5 +28,23 @@ ZONE_DEFAULT_DURATIONS: dict[int, int] = {
     6819: 120,   # Zolderkamer   — 2 h
 }
 
+# Zone API ID → slug used for input helper entity IDs
+ZONE_SLUGS: dict[int, str] = {
+    6811: "kantoor",
+    6812: "bijkeuken",
+    6813: "woonkamer",
+    6814: "keuken",
+    6815: "badkamer_1e",
+    6816: "slaapkamer_master",
+    6817: "kantoor_1e",
+    6818: "slaapkamer_lotte",
+    6819: "zolderkamer",
+    6820: "slaapkamer_tiebe",
+    6821: "badkamer_zolder",
+}
+
 # Con mode: maximum duration (8 hours)
 CON_MAX_MINUTES = 480
+
+# Debounce: seconds to wait after last +/- press before sending to portal
+DEBOUNCE_SECONDS = 2.0

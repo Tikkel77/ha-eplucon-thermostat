@@ -66,6 +66,41 @@ def _schedule_summary(zone: Zone) -> str | None:
     return "; ".join(parts) if parts else "No intervals"
 
 
+def _schedule_intervals_attr(zone: Zone) -> dict | None:
+    """Return structured schedule intervals for use in extra_state_attributes."""
+    schedule = zone.raw_data.get("schedule", {})
+    if not schedule:
+        return None
+
+    result: dict = {}
+    for profile, label in (("p0", "weekday"), ("p1", "weekend")):
+        intervals = schedule.get(f"{profile}Intervals", [])
+        active = []
+        for iv in intervals:
+            if not isinstance(iv, dict):
+                continue
+            s = iv.get("start", 6100)
+            e = iv.get("stop", 6100)
+            if s >= 1440:
+                continue
+            active.append({
+                "start": f"{s // 60:02d}:{s % 60:02d}",
+                "end": f"{e // 60:02d}:{e % 60:02d}" if e < 1440 else None,
+                "temp": iv.get("temp", 0) / 10.0,
+            })
+        result[label] = active
+
+        # Setback temp
+        raw_sb = schedule.get(f"{profile}SetbackTemp")
+        if raw_sb is not None:
+            try:
+                result[f"{label}_setback"] = int(raw_sb) / 10.0
+            except (ValueError, TypeError):
+                pass
+
+    return result
+
+
 SENSOR_TYPES = [
     {
         "key": "current_temperature",
@@ -232,3 +267,16 @@ class EpluconSensorEntity(CoordinatorEntity[EpluconDataCoordinator], SensorEntit
             return self._sensor_type["value_fn"](zone)
         except Exception:
             return None
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        """Expose structured schedule data on the schedule_summary sensor."""
+        if self._sensor_type["key"] != "schedule_summary":
+            return None
+        zone = self._zone
+        if zone is None:
+            return None
+        intervals = _schedule_intervals_attr(zone)
+        if intervals is None:
+            return None
+        return {"schedule_intervals": intervals}
