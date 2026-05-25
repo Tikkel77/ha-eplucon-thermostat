@@ -1,0 +1,18 @@
+[auth]
+username = "YOUR_EMAIL"
+password = "YOUR_PASSWORD"
+api_key = "YOUR_API_KEY"
+
+[connection]
+base_url = "https://portaal.eplucon.nl"
+request_timeout = 40
+settle_seconds = 15
+poll_interval_seconds = 5
+insecure = false
+
+[webapp]
+host = "0.0.0.0"
+port = 8080
+debug = false
+server = "auto"
+threads = 6
