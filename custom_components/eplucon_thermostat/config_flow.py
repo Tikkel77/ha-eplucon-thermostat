@@ -155,12 +155,12 @@ class EpluconOptionsFlowHandler(config_entries.OptionsFlow):
             data_schema=vol.Schema(
                 {
                     vol.Required("max_rpm", default=options.get("max_rpm", 5400)): int,
-                    vol.Required("sh_a", default=options.get("sh_a", 0.03)): vol.Coerce(float),
-                    vol.Required("sh_b", default=options.get("sh_b", 25.0)): vol.Coerce(float),
-                    vol.Required("sh_c", default=options.get("sh_c", 0.0)): vol.Coerce(float),
-                    vol.Required("ww_a", default=options.get("ww_a", 0.0)): vol.Coerce(float),
-                    vol.Required("ww_b", default=options.get("ww_b", 40.0)): vol.Coerce(float),
-                    vol.Required("ww_c", default=options.get("ww_c", 200.0)): vol.Coerce(float),
+                    vol.Required("sh_a", default=options.get("sh_a", 0.03)): float,
+                    vol.Required("sh_b", default=options.get("sh_b", 25.0)): float,
+                    vol.Required("sh_c", default=options.get("sh_c", 0.0)): float,
+                    vol.Required("ww_a", default=options.get("ww_a", 0.0)): float,
+                    vol.Required("ww_b", default=options.get("ww_b", 40.0)): float,
+                    vol.Required("ww_c", default=options.get("ww_c", 200.0)): float,
                 }
             ),
         )
