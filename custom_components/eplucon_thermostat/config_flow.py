@@ -88,3 +88,40 @@ class EpluconThermostatConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=STEP_USER_DATA_SCHEMA,
             errors=errors,
         )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle a reconfiguration flow initialized by the user."""
+        errors: dict[str, str] = {}
+        entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
+
+        if user_input is not None:
+            try:
+                info = await _validate_input(self.hass, user_input)
+            except AuthenticationError:
+                errors["base"] = "invalid_auth"
+            except EpluconError:
+                errors["base"] = "cannot_connect"
+            except ValueError as err:
+                errors["base"] = "no_modules"
+            except Exception:
+                _LOGGER.exception("Unexpected exception")
+                errors["base"] = "unknown"
+            else:
+                return self.async_update_reload_and_abort(
+                    entry,
+                    data_updates=user_input,
+                )
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_USERNAME, default=entry.data.get(CONF_USERNAME)): str,
+                    vol.Required(CONF_PASSWORD, default=entry.data.get(CONF_PASSWORD)): str,
+                    vol.Required(CONF_API_KEY, default=entry.data.get(CONF_API_KEY)): str,
+                }
+            ),
+            errors=errors,
+        )
