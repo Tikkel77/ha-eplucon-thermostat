@@ -7,7 +7,7 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 
 from .api import EpluconClient, AuthenticationError, EpluconError
@@ -124,4 +124,43 @@ class EpluconThermostatConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 }
             ),
             errors=errors,
+        )
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> config_entries.OptionsFlow:
+        """Create the options flow."""
+        return EpluconOptionsFlowHandler(config_entry)
+
+
+class EpluconOptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle options for Eplucon Thermostat."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        """Initialize options flow."""
+        self.config_entry = config_entry
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Manage the options."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        options = self.config_entry.options
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("max_rpm", default=options.get("max_rpm", 5400)): int,
+                    vol.Required("sh_a", default=options.get("sh_a", 0.03)): vol.Coerce(float),
+                    vol.Required("sh_b", default=options.get("sh_b", 25.0)): vol.Coerce(float),
+                    vol.Required("sh_c", default=options.get("sh_c", 0.0)): vol.Coerce(float),
+                    vol.Required("ww_a", default=options.get("ww_a", 0.0)): vol.Coerce(float),
+                    vol.Required("ww_b", default=options.get("ww_b", 40.0)): vol.Coerce(float),
+                    vol.Required("ww_c", default=options.get("ww_c", 200.0)): vol.Coerce(float),
+                }
+            ),
         )

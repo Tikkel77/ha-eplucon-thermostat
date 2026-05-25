@@ -10,7 +10,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, UnitOfTemperature
+from homeassistant.const import PERCENTAGE, UnitOfTemperature, UnitOfPower
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -220,6 +220,9 @@ async def async_setup_entry(
             )
 
     for module_id in coordinator.heatpumps:
+        entities.append(HeatpumpPowerSensor(coordinator, module_id, entry, is_water_heating=True))
+        entities.append(HeatpumpPowerSensor(coordinator, module_id, entry, is_water_heating=False))
+
         for def_dict in RAW_SENSOR_DEFS:
             desc = EpluconSensorEntityDescription(
                 key=def_dict["key"],
@@ -357,3 +360,84 @@ class HeatpumpSensor(CoordinatorEntity[EpluconDataCoordinator], SensorEntity):
         if not hp or not hp.realtime_info:
             return None
         return self.entity_description.value_fn(hp)
+
+
+class HeatpumpPowerSensor(CoordinatorEntity[EpluconDataCoordinator], SensorEntity):
+    """Estimated power usage sensor based on compressor RPM."""
+
+    _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self,
+        coordinator: EpluconDataCoordinator,
+        module_id: int,
+        entry: ConfigEntry,
+        is_water_heating: bool,
+    ) -> None:
+        super().__init__(coordinator)
+        self._module_id = module_id
+        self._entry = entry
+        self._is_water_heating = is_water_heating
+
+        hp = coordinator.heatpumps[module_id]
+        kind = "water_heating" if is_water_heating else "space_heating"
+        self._attr_unique_id = f"eplucon_hp_{module_id}_power_{kind}"
+        self._attr_name = "Power Usage Water Heating" if is_water_heating else "Power Usage Space Heating"
+        
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, f"hp_{module_id}")},
+            name=hp.name,
+            manufacturer=MANUFACTURER,
+            model="Heatpump",
+        )
+
+    @property
+    def _heatpump(self):
+        return self.coordinator.heatpumps.get(self._module_id)
+
+    @property
+    def available(self) -> bool:
+        hp = self._heatpump
+        return super().available and hp is not None and hp.realtime_info is not None
+
+    @property
+    def native_value(self):
+        hp = self._heatpump
+        if not hp or not hp.realtime_info:
+            return None
+
+        # Check if doing Domestic Hot Water
+        active_ww_str = str(hp.realtime_info.common.active_requests_ww).upper()
+        active_ww = active_ww_str in ["1", "ON", "TRUE"]
+
+        if self._is_water_heating and not active_ww:
+            return 0.0
+        if not self._is_water_heating and active_ww:
+            return 0.0
+
+        try:
+            rpm = float(hp.realtime_info.common.compressor_speed)
+        except (TypeError, ValueError):
+            return 0.0
+
+        if rpm <= 0:
+            return 0.0
+
+        opts = self._entry.options
+        max_rpm = opts.get("max_rpm", 5400)
+        pct = (rpm / max_rpm) * 100
+
+        if self._is_water_heating:
+            a = opts.get("ww_a", 0.0)
+            b = opts.get("ww_b", 40.0)
+            c = opts.get("ww_c", 200.0)
+        else:
+            a = opts.get("sh_a", 0.03)
+            b = opts.get("sh_b", 25.0)
+            c = opts.get("sh_c", 0.0)
+
+        power = (a * (pct ** 2)) + (b * pct) + c
+        return round(power, 1)

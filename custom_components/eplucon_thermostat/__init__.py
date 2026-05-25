@@ -104,7 +104,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not hass.services.has_service(DOMAIN, SERVICE_SET_SETBACK):
         _register_services(hass)
 
+    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
+
     return True
+
+
+async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload config entry on options change."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 def _get_coordinator(hass: HomeAssistant) -> EpluconDataCoordinator:
