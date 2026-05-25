@@ -11,7 +11,16 @@ from typing import Any, Callable, Iterable, Optional
 import requests
 
 from .errors import ApiError, AuthenticationError, NotFoundError, WriteError
-from .models import FormInput, Module, ProgramForm, Zone
+from .models import (
+    FormInput,
+    Module,
+    ProgramForm,
+    Zone,
+    HeatpumpCommonInfo,
+    HeatpumpRealtimeInfo,
+    HeatpumpHeatloadingStatus,
+    HeatpumpDevice,
+)
 from .schedule import (
     compute_con_duration_minutes_from_next_start,
     get_next_schedule_start,
@@ -100,6 +109,41 @@ class EpluconClient:
 
     def get_zone_modules(self) -> list[Module]:
         return [m for m in self.get_modules() if m.type == "zones_system_controller"]
+
+    def get_heatpump_modules(self) -> list[Module]:
+        return [m for m in self.get_modules() if m.type == "heat_pump"]
+
+    def get_heatpumps(self) -> list[HeatpumpDevice]:
+        modules = self.get_heatpump_modules()
+        heatpumps: list[HeatpumpDevice] = []
+        for m in modules:
+            try:
+                rt_info = self.get_heatpump_realtime_info(m.id)
+            except Exception:
+                rt_info = None
+            try:
+                hl_status = self.get_heatpump_heatloading_status(m.id)
+            except Exception:
+                hl_status = None
+            heatpumps.append(
+                HeatpumpDevice(
+                    module_id=m.id,
+                    account_module_index=m.account_module_index,
+                    name=m.name,
+                    realtime_info=rt_info,
+                    heatloading_status=hl_status,
+                )
+            )
+        return heatpumps
+
+    def get_heatpump_realtime_info(self, module_id: int) -> HeatpumpRealtimeInfo:
+        data = self._api_get_json(f"/econtrol/modules/{module_id}/get_realtime_info", is_dict=True)
+        common = HeatpumpCommonInfo(**data.get("common", {}))
+        return HeatpumpRealtimeInfo(common=common, heatpump=data.get("heatpump"))
+
+    def get_heatpump_heatloading_status(self, module_id: int) -> HeatpumpHeatloadingStatus:
+        data = self._api_get_json(f"/econtrol/modules/{module_id}/heatloading_status", is_dict=True)
+        return HeatpumpHeatloadingStatus(**data)
 
     def get_zones(self, module_id: Optional[int] = None) -> list[Zone]:
         modules = self.get_zone_modules()
@@ -580,7 +624,7 @@ class EpluconClient:
     # Internal helpers
     # -------------------------------
 
-    def _api_get_json(self, path: str) -> list[dict[str, Any]]:
+    def _api_get_json(self, path: str, is_dict: bool = False) -> Any:
         response = self._session.get(
             f"{self.api_base}{path}",
             headers={
@@ -595,7 +639,9 @@ class EpluconClient:
         if payload.get("auth") is False:
             raise AuthenticationError(f"Bearer auth mislukt voor {path}: {payload}")
         data = payload.get("data")
-        if not isinstance(data, list):
+        if is_dict and not isinstance(data, dict):
+             raise ApiError(f"Onverwachte JSON structuur voor {path}: verwachtte een dict")
+        if not is_dict and not isinstance(data, list):
             raise ApiError(f"Onverwachte JSON structuur voor {path}: {payload}")
         return data
 

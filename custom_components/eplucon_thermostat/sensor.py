@@ -18,7 +18,11 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api import Zone
 from .api.schedule import get_next_schedule_start
-from .const import DOMAIN, MANUFACTURER
+from .const import (
+    DOMAIN, MANUFACTURER,
+    RAW_SENSOR_DEFS, FRIENDLY_TEXT_SENSOR_DEFS, HEATLOADING_SENSOR_DEFS,
+    EpluconSensorEntityDescription, normalize_number,
+)
 from .coordinator import EpluconDataCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -214,6 +218,39 @@ async def async_setup_entry(
             entities.append(
                 EpluconSensorEntity(coordinator, zone_api_id, sensor_type)
             )
+
+    for module_id in coordinator.heatpumps:
+        for def_dict in RAW_SENSOR_DEFS:
+            desc = EpluconSensorEntityDescription(
+                key=def_dict["key"],
+                name=def_dict["name"],
+                native_unit_of_measurement=def_dict.get("unit"),
+                state_class=def_dict.get("state_class"),
+                device_class=def_dict.get("device_class"),
+                value_fn=lambda device, attr=def_dict["attr"]: normalize_number(getattr(device.realtime_info.common, attr)),
+                exists_fn=lambda device, attr=def_dict["attr"]: getattr(device.realtime_info.common, attr) is not None,
+            )
+            entities.append(HeatpumpSensor(coordinator, module_id, desc))
+            
+        for def_dict in FRIENDLY_TEXT_SENSOR_DEFS:
+            desc = EpluconSensorEntityDescription(
+                key=def_dict["key"],
+                name=def_dict["name"],
+                value_fn=def_dict["value_fn"],
+            )
+            entities.append(HeatpumpSensor(coordinator, module_id, desc))
+            
+        for def_dict in HEATLOADING_SENSOR_DEFS:
+            if "value_fn" in def_dict:
+                desc = EpluconSensorEntityDescription(
+                    key=def_dict["key"],
+                    name=def_dict["name"],
+                    device_class=def_dict.get("device_class"),
+                    value_fn=def_dict["value_fn"],
+                    exists_fn=def_dict.get("exists_fn", lambda _: True),
+                )
+                entities.append(HeatpumpSensor(coordinator, module_id, desc))
+
     async_add_entities(entities)
 
 
@@ -280,3 +317,43 @@ class EpluconSensorEntity(CoordinatorEntity[EpluconDataCoordinator], SensorEntit
         if intervals is None:
             return None
         return {"schedule_intervals": intervals}
+
+
+class HeatpumpSensor(CoordinatorEntity[EpluconDataCoordinator], SensorEntity):
+    """Eplucon Heatpump sensor."""
+
+    _attr_has_entity_name = True
+    entity_description: EpluconSensorEntityDescription
+
+    def __init__(self, coordinator: EpluconDataCoordinator, module_id: int, description: EpluconSensorEntityDescription):
+        super().__init__(coordinator)
+        self._module_id = module_id
+        self.entity_description = description
+        
+        hp = coordinator.heatpumps[module_id]
+        self._attr_unique_id = f"eplucon_hp_{module_id}_{description.key}"
+        
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, f"hp_{module_id}")},
+            name=hp.name,
+            manufacturer=MANUFACTURER,
+            model="Heatpump",
+        )
+
+    @property
+    def _heatpump(self):
+        return self.coordinator.heatpumps.get(self._module_id)
+
+    @property
+    def available(self) -> bool:
+        hp = self._heatpump
+        if not super().available or not hp or not hp.realtime_info:
+            return False
+        return self.entity_description.exists_fn(hp)
+
+    @property
+    def native_value(self):
+        hp = self._heatpump
+        if not hp or not hp.realtime_info:
+            return None
+        return self.entity_description.value_fn(hp)

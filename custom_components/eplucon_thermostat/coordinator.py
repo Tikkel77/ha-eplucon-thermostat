@@ -52,6 +52,8 @@ class EpluconDataCoordinator(DataUpdateCoordinator[dict[int, Zone]]):
         self._pending_temps: dict[int, float] = {}
         # Zones currently being written to the portal
         self._writing_zones: set[int] = set()
+        # Heatpumps data
+        self.heatpumps: dict[int, Any] = {}
 
     async def _async_update_data(self) -> dict[int, Zone]:
         """Fetch zone data from Eplucon REST API (Bearer token, read-only)."""
@@ -64,6 +66,13 @@ class EpluconDataCoordinator(DataUpdateCoordinator[dict[int, Zone]]):
         except Exception as err:
             raise UpdateFailed(f"Unexpected error: {err}") from err
 
+        try:
+            hps = await self.hass.async_add_executor_job(self.client.get_heatpumps)
+            self.heatpumps = {h.module_id: h for h in hps}
+        except Exception as err:
+            _LOGGER.warning("Failed to fetch heatpump data: %s", err)
+            self.heatpumps = {}
+
         return {z.zone_api_id: z for z in zones}
 
     def get_zone(self, zone_api_id: int) -> Zone | None:
@@ -71,6 +80,10 @@ class EpluconDataCoordinator(DataUpdateCoordinator[dict[int, Zone]]):
         if self.data is None:
             return None
         return self.data.get(zone_api_id)
+
+    def get_heatpump(self, module_id: int) -> Any | None:
+        """Get heatpump from the latest data."""
+        return self.heatpumps.get(module_id)
 
     def _get_default_minutes(self, zone: Zone) -> int:
         """Get per-zone default override duration in minutes.
@@ -294,33 +307,72 @@ class EpluconDataCoordinator(DataUpdateCoordinator[dict[int, Zone]]):
     def _schedule_delayed_refresh(self, zone_api_id: int, expected_temp: float | None = None) -> None:
         """Poll until the portal confirms the temperature change.
 
-        Checks every 15 seconds for up to 3 minutes. Stops early if
-        the zone's set temperature matches the expected value.
-        Clears the pending temp once confirmed.
+        Phase 1: Wait for duringChange to become True (portal processing).
+                 Poll every 5 seconds, up to 60s.
+        Phase 2: While duringChange is True, poll every 5 seconds, up to 3 min.
+        Phase 3: Once duringChange clears, do one final refresh to pick up
+                 the confirmed set temperature, then clear pending state.
         """
 
         async def _poll_until_confirmed() -> None:
-            max_attempts = 12  # 12 × 15s = 3 minutes
-            for attempt in range(max_attempts):
-                await asyncio.sleep(15)
+            # Phase 1: Wait for duringChange to appear (max 60s)
+            for _ in range(12):  # 12 × 5s = 60s
+                await asyncio.sleep(5)
                 try:
                     await self.async_request_refresh()
                 except Exception:
                     continue
-                # Check if change propagated
-                if expected_temp is not None:
-                    zone = self.get_zone(zone_api_id)
-                    if zone and abs(zone.set_temperature_c - expected_temp) < 0.05:
-                        _LOGGER.debug(
-                            "Zone %s confirmed at %.1f°C after %ds",
-                            zone_api_id, expected_temp, (attempt + 1) * 15,
-                        )
-                        self._pending_temps.pop(zone_api_id, None)
-                        self.async_update_listeners()
-                        return
-            # Timed out — clear pending anyway to stop flashing
+                zone = self.get_zone(zone_api_id)
+                if zone is None:
+                    continue
+                during_change = zone.raw_data.get("zone", {}).get("duringChange", False)
+                if during_change:
+                    _LOGGER.debug("Zone %s: duringChange detected", zone_api_id)
+                    break
+                # Also check if temp already confirmed without duringChange
+                if expected_temp is not None and abs(zone.set_temperature_c - expected_temp) < 0.05:
+                    _LOGGER.debug("Zone %s confirmed at %.1f°C (no duringChange phase)", zone_api_id, expected_temp)
+                    self._pending_temps.pop(zone_api_id, None)
+                    self.async_update_listeners()
+                    return
+
+            # Phase 2: Poll while duringChange is True (max 3 min)
+            for attempt in range(36):  # 36 × 5s = 3 min
+                await asyncio.sleep(5)
+                try:
+                    await self.async_request_refresh()
+                except Exception:
+                    continue
+                zone = self.get_zone(zone_api_id)
+                if zone is None:
+                    continue
+                during_change = zone.raw_data.get("zone", {}).get("duringChange", False)
+                if not during_change:
+                    _LOGGER.debug(
+                        "Zone %s: duringChange cleared after %ds, doing final refresh",
+                        zone_api_id, (attempt + 1) * 5,
+                    )
+                    break
+            else:
+                _LOGGER.debug("Zone %s: duringChange still active after 3min", zone_api_id)
+
+            # Phase 3: Final refresh to get confirmed temperature
+            await asyncio.sleep(2)
+            try:
+                await self.async_request_refresh()
+            except Exception:
+                pass
+
             self._pending_temps.pop(zone_api_id, None)
             self.async_update_listeners()
-            _LOGGER.debug("Zone %s: gave up waiting for confirmation after 3min", zone_api_id)
+            zone = self.get_zone(zone_api_id)
+            if zone and expected_temp is not None:
+                if abs(zone.set_temperature_c - expected_temp) < 0.05:
+                    _LOGGER.debug("Zone %s: confirmed at %.1f°C", zone_api_id, expected_temp)
+                else:
+                    _LOGGER.warning(
+                        "Zone %s: expected %.1f°C but got %.1f°C",
+                        zone_api_id, expected_temp, zone.set_temperature_c,
+                    )
 
         self.hass.async_create_task(_poll_until_confirmed())

@@ -14,7 +14,11 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api import Zone
-from .const import DOMAIN, MANUFACTURER
+from .const import (
+    DOMAIN, MANUFACTURER,
+    ONOFF_SENSOR_DEFS,
+    EpluconBinarySensorEntityDescription, normalize_bool,
+)
 from .coordinator import EpluconDataCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -64,6 +68,18 @@ async def async_setup_entry(
             entities.append(
                 EpluconBinarySensorEntity(coordinator, zone_api_id, sensor_type)
             )
+
+    for module_id in coordinator.heatpumps:
+        for def_dict in ONOFF_SENSOR_DEFS:
+            desc = EpluconBinarySensorEntityDescription(
+                key=def_dict["key"],
+                name=def_dict["name"],
+                device_class=def_dict.get("device_class"),
+                value_fn=lambda device, attr=def_dict["attr"]: normalize_bool(getattr(device.realtime_info.common, attr)),
+                exists_fn=lambda device, attr=def_dict["attr"]: getattr(device.realtime_info.common, attr) is not None,
+            )
+            entities.append(HeatpumpBinarySensor(coordinator, module_id, desc))
+
     async_add_entities(entities)
 
 
@@ -121,3 +137,43 @@ class EpluconBinarySensorEntity(
         if "icon_on" in self._sensor_type and "icon_off" in self._sensor_type:
             return self._sensor_type["icon_on"] if self.is_on else self._sensor_type["icon_off"]
         return None
+
+
+class HeatpumpBinarySensor(CoordinatorEntity[EpluconDataCoordinator], BinarySensorEntity):
+    """Eplucon Heatpump binary sensor."""
+
+    _attr_has_entity_name = True
+    entity_description: EpluconBinarySensorEntityDescription
+
+    def __init__(self, coordinator: EpluconDataCoordinator, module_id: int, description: EpluconBinarySensorEntityDescription):
+        super().__init__(coordinator)
+        self._module_id = module_id
+        self.entity_description = description
+        
+        hp = coordinator.heatpumps[module_id]
+        self._attr_unique_id = f"eplucon_hp_{module_id}_{description.key}"
+        
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, f"hp_{module_id}")},
+            name=hp.name,
+            manufacturer=MANUFACTURER,
+            model="Heatpump",
+        )
+
+    @property
+    def _heatpump(self):
+        return self.coordinator.heatpumps.get(self._module_id)
+
+    @property
+    def available(self) -> bool:
+        hp = self._heatpump
+        if not super().available or not hp or not hp.realtime_info:
+            return False
+        return self.entity_description.exists_fn(hp)
+
+    @property
+    def is_on(self) -> bool | None:
+        hp = self._heatpump
+        if not hp or not hp.realtime_info:
+            return None
+        return self.entity_description.value_fn(hp)
