@@ -15,6 +15,7 @@ INTEGRATION_FILES = [
     "coordinator.py",
     "portal.py",
     "__init__.py",
+    "config_flow.py",
     "climate.py",
     "const.py",
     "sensor.py",
